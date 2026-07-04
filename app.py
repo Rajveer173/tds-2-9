@@ -1,9 +1,10 @@
-from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi import FastAPI, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
-import time
 import uuid
+import time
 
 app = FastAPI()
 
@@ -23,13 +24,14 @@ TOTAL_ORDERS = 51
 RATE_LIMIT = 20
 WINDOW = 10  # seconds
 
-# ---------------- STORAGE ----------------
+# ---------------- DATA ----------------
 
-orders = [{"id": i} for i in range(1, TOTAL_ORDERS + 1)]
+catalog = [{"id": i} for i in range(1, TOTAL_ORDERS + 1)]
 
 idempotency_store = {}
 
 client_requests = {}
+
 
 # ---------------- MODELS ----------------
 
@@ -40,44 +42,57 @@ class OrderRequest(BaseModel):
 
 # ---------------- RATE LIMIT ----------------
 
-def check_rate_limit(client_id: str, response: Response):
+def rate_limit(client_id: str):
     now = time.time()
 
-    timestamps = client_requests.setdefault(client_id, [])
+    bucket = client_requests.setdefault(client_id, [])
 
-    timestamps[:] = [t for t in timestamps if now - t < WINDOW]
+    bucket[:] = [t for t in bucket if now - t < WINDOW]
 
-    if len(timestamps) >= RATE_LIMIT:
-        retry = WINDOW - (now - timestamps[0])
-        response.headers["Retry-After"] = str(max(1, int(retry)))
-        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+    if len(bucket) >= RATE_LIMIT:
+        retry_after = max(1, int(WINDOW - (now - bucket[0])))
 
-    timestamps.append(now)
+        return JSONResponse(
+            status_code=429,
+            headers={
+                "Retry-After": str(retry_after)
+            },
+            content={
+                "detail": "Rate limit exceeded"
+            }
+        )
+
+    bucket.append(now)
+    return None
 
 
 # ---------------- CREATE ORDER ----------------
 
 @app.post("/orders", status_code=201)
 def create_order(
-    request: OrderRequest,
-    response: Response,
+    order: OrderRequest,
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
-    client_id: str = Header("default", alias="X-Client-Id")
+    client_id: str = Header("default", alias="X-Client-Id"),
 ):
-    check_rate_limit(client_id, response)
+    rl = rate_limit(client_id)
+    if rl:
+        return rl
 
     if idempotency_key in idempotency_store:
         return idempotency_store[idempotency_key]
 
-    order = {
+    created = {
         "id": str(uuid.uuid4()),
-        "item": request.item,
-        "quantity": request.quantity
+        "item": order.item,
+        "quantity": order.quantity,
     }
 
-    idempotency_store[idempotency_key] = order
+    idempotency_store[idempotency_key] = created
 
-    return order
+    return JSONResponse(
+        status_code=201,
+        content=created
+    )
 
 
 # ---------------- LIST ORDERS ----------------
@@ -86,22 +101,29 @@ def create_order(
 def list_orders(
     limit: int = 10,
     cursor: Optional[str] = None,
-    response: Response = None,
-    client_id: str = Header("default", alias="X-Client-Id")
+    client_id: str = Header("default", alias="X-Client-Id"),
 ):
-    check_rate_limit(client_id, response)
+    rl = rate_limit(client_id)
+    if rl:
+        return rl
 
-    start = int(cursor) if cursor else 0
+    try:
+        start = int(cursor) if cursor else 0
+    except ValueError:
+        start = 0
+
+    if start < 0:
+        start = 0
 
     end = min(start + limit, TOTAL_ORDERS)
 
-    items = orders[start:end]
+    items = catalog[start:end]
 
     next_cursor = str(end) if end < TOTAL_ORDERS else None
 
     return {
         "items": items,
-        "next_cursor": next_cursor
+        "next_cursor": next_cursor,
     }
 
 
