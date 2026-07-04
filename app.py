@@ -16,7 +16,7 @@ import threading
 from collections import deque
 from typing import Optional
 
-from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -96,27 +96,17 @@ def check_rate_limit(client_id: str):
         bucket.append(now)
 
 
-@app.middleware("http")
-async def rate_limit_middleware(request: Request, call_next):
-    # Only rate-limit the orders endpoints; let CORS preflight through untouched.
-    if request.method != "OPTIONS" and request.url.path.startswith("/orders"):
-        client_id = request.headers.get("X-Client-Id", "anonymous")
-        try:
-            check_rate_limit(client_id)
-        except HTTPException as exc:
-            return Response(
-                content=f'{{"detail": "{exc.detail}"}}',
-                status_code=exc.status_code,
-                headers=exc.headers,
-                media_type="application/json",
-            )
-    return await call_next(request)
+def rate_limit_dependency(request: Request):
+    """FastAPI dependency: runs inside the normal request/exception pipeline,
+    so CORSMiddleware still attaches CORS headers even on a 429 response."""
+    client_id = request.headers.get("X-Client-Id", "anonymous")
+    check_rate_limit(client_id)
 
 
 # --------------------------------------------------------------------------
 # 1. Idempotent order creation
 # --------------------------------------------------------------------------
-@app.post("/orders", status_code=201)
+@app.post("/orders", status_code=201, dependencies=[Depends(rate_limit_dependency)])
 def create_order(
     order: OrderIn,
     response: Response,
@@ -149,7 +139,7 @@ def create_order(
 # --------------------------------------------------------------------------
 # 2. Cursor-based pagination
 # --------------------------------------------------------------------------
-@app.get("/orders")
+@app.get("/orders", dependencies=[Depends(rate_limit_dependency)])
 def list_orders(limit: int = 10, cursor: Optional[str] = None):
     if limit <= 0:
         raise HTTPException(status_code=400, detail="limit must be positive")
@@ -184,7 +174,5 @@ def root():
         "service": "orders-api",
         "total_orders": TOTAL_ORDERS,
         "rate_limit": f"{RATE_LIMIT} req / {RATE_WINDOW_SECONDS}s",
-       "endpoints": ["POST /orders", "GET /orders?limit=&cursor="],
+        "endpoints": ["POST /orders", "GET /orders?limit=&cursor="],
     }
-
-#wedwedfw
