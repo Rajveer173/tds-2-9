@@ -184,5 +184,7 @@ def root():
         "service": "orders-api",
         "total_orders": TOTAL_ORDERS,
         "rate_limit": f"{RATE_LIMIT} req / {RATE_WINDOW_SECONDS}s",
-        "endpoints": ["POST /orders", "GET /orders?limit=&cursor="],
+       "endpoints": ["POST /orders", "GET /orders?limit=&cursor="],
     }
+
+#wedwedfw
